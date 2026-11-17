@@ -72,6 +72,50 @@
       </form>
     </div>
 
+    <section class="decision-panel" data-testid="switch-panel">
+      <h3>代理切换清单（回写自反爬决策数据快照）</h3>
+      <p class="page-desc">
+        切换动作必须来自当前一致的策略版本；同一快照只生效一次，代理池拒绝第二份结果。
+      </p>
+      <form class="filter-bar" @submit.prevent="createSwitch">
+        <label class="filter-item">
+          <span>决策快照编号</span>
+          <input v-model="snapshotId" data-testid="switch-snapshot-id" placeholder="粘贴反爬决策快照编号" required />
+        </label>
+        <label class="filter-item">
+          <span>代理节点（可选）</span>
+          <input v-model="proxyNodeId" data-testid="switch-node-id" placeholder="留空则自动选择" />
+        </label>
+        <button class="btn primary" data-testid="switch-submit" type="submit" :disabled="switching">
+          {{ switching ? '生成中…' : '按快照生成切换清单' }}
+        </button>
+      </form>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>切换编号</th><th>来源快照编号</th><th>策略版本</th><th>代理节点</th>
+            <th>命中</th><th>建议延迟ms</th><th>熔断</th><th>来源入口</th><th>写入时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in switchList" :key="String(item.切换编号)" :data-testid="`switch-row-${item.切换编号}`">
+            <td>{{ item.切换编号 }}</td>
+            <td>{{ item.来源快照编号 }}</td>
+            <td>{{ item.策略版本 }}</td>
+            <td>{{ item.代理节点 }}</td>
+            <td>{{ item.命中 ? '命中' : '未命中' }}</td>
+            <td>{{ item.建议延迟ms ?? '—' }}</td>
+            <td>{{ item.熔断开启 ? '熔断开启' : '正常' }}</td>
+            <td>{{ item.来源入口 === 'crawler' ? '采集入口' : '代理切换入口' }}</td>
+            <td>{{ item.写入时间 }}</td>
+          </tr>
+          <tr v-if="!switchList.length">
+            <td colspan="9" class="empty-state">暂无切换清单，先到反爬对抗生成决策快照</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
     <footer class="page-foot">
       <span>共 {{ total }} 条代理池记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
@@ -85,6 +129,7 @@ import { computed, onMounted, ref } from 'vue'
 import { request } from '@/api/client'
 
 type Row = Record<string, string | number | null>
+type LooseRow = Record<string, unknown>
 
 const ENDPOINT = '/api/proxy'
 const columns = ["节点编号", "IP地址", "端口号", "协议类型", "匿程度", "响应延迟", "存活检测", "所属区域"]
@@ -105,6 +150,45 @@ const stats = computed(() => [
   { label: metricNames[1], value: rows.value.filter((row) => row.status === statuses[1]).length },
   { label: metricNames[2], value: rows.value.filter((row) => row.status === statuses[statuses.length - 1]).length },
 ])
+
+// 代理切换清单（数据来源：反爬决策数据快照）
+const switchList = ref<LooseRow[]>([])
+const snapshotId = ref('')
+const proxyNodeId = ref('')
+const switching = ref(false)
+
+async function loadSwitches() {
+  try {
+    const response = await request(`${ENDPOINT}/switch-list`)
+    if (!response.ok) throw new Error('切换清单读取失败')
+    switchList.value = (await response.json()).items ?? []
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '切换清单读取失败'
+  }
+}
+
+async function createSwitch() {
+  switching.value = true
+  errorMessage.value = ''
+  try {
+    const response = await request(`${ENDPOINT}/switch-list`, {
+      method: 'POST',
+      body: JSON.stringify({
+        snapshot_id: snapshotId.value.trim(),
+        proxy_node_id: proxyNodeId.value.trim() || null,
+      }),
+    })
+    const payload = await response.json()
+    if (!response.ok || !payload.ok) throw new Error(payload.message || '切换清单生成失败')
+    snapshotId.value = ''
+    proxyNodeId.value = ''
+    await loadSwitches()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '切换清单生成失败'
+  } finally {
+    switching.value = false
+  }
+}
 
 function resetFilters() {
   filters.value = {}
@@ -184,5 +268,8 @@ async function reload() {
   }
 }
 
-onMounted(reload)
+onMounted(() => {
+  void reload()
+  void loadSwitches()
+})
 </script>

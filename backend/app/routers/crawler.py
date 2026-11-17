@@ -1,4 +1,4 @@
-"""爬虫引擎 时间线接口：返回作业时间序列结构。"""
+"""爬虫引擎 时间线接口：返回作业时间序列结构，并接入采集入口统一反爬决策。"""
 from __future__ import annotations
 
 import csv
@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload
 from app.services.crawler import CrawlerService
@@ -15,6 +16,15 @@ router = APIRouter(prefix="/api/crawler", tags=["爬虫引擎"])
 service = CrawlerService()
 LIST_FIELDS = ["任务编号", "任务名称", "关联站点", "关联规则", "并发线程", "调度周期", "超时秒数", "下发批次"]
 STATUSES = ["草稿", "待校验", "已启用", "已停用"]
+
+
+class CollectDecisionPayload(BaseModel):
+    """采集入口决策入参：请求指标 + 版本口径。"""
+
+    metrics: dict[str, Any]
+    version: str | None = None
+    prefer: str = "latest"
+    request_batch: str | None = None
 
 
 def csv_cell(value: Any) -> str:
@@ -68,3 +78,19 @@ def run_action(entry_id: int, payload: ActionPayload) -> ActionResult:
     if entry_or_none is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry_or_none)
+
+
+@router.post("/anti-decisions")
+def collect_decision(payload: CollectDecisionPayload) -> ActionResult:
+    """采集入口：委托反爬对抗统一决策，返回绑定同一策略版本的决策快照。"""
+    if payload.prefer not in ("latest", "frozen"):
+        return ActionResult(ok=False, message="prefer 只支持 latest（最新版）或 frozen（冻结版）")
+    snapshot, message = service.collect_decide(
+        payload.metrics,
+        version=payload.version,
+        prefer=payload.prefer,
+        request_batch=payload.request_batch,
+    )
+    if snapshot is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=snapshot)

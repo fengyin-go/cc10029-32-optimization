@@ -1,4 +1,7 @@
-"""代理池接口：维护代理节点，覆盖提交校验、启用配置、停用配置等动作。"""
+"""代理池接口：维护代理节点，覆盖提交校验、启用配置、停用配置等动作。
+
+代理切换清单读取反爬对抗的决策数据快照生成，切换动作必须来自当前一致的策略版本。
+"""
 from __future__ import annotations
 
 import csv
@@ -6,6 +9,7 @@ import io
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
 from app.services.proxy import ProxyService
@@ -16,6 +20,13 @@ service = ProxyService()
 
 LIST_FIELDS = ["节点编号", "IP地址", "端口号", "协议类型", "匿程度", "响应延迟", "存活检测", "所属区域"]
 STATUSES = ["草稿", "待校验", "已启用", "已停用"]
+
+
+class SwitchPayload(BaseModel):
+    """代理切换清单入参：决策快照编号 + 可选代理节点。"""
+
+    snapshot_id: str
+    proxy_node_id: str | None = None
 
 
 def query_filters(request: Request) -> dict[str, str]:
@@ -65,6 +76,16 @@ def export_entries(
         headers={"Content-Disposition": 'attachment; filename="proxy.csv"'})
 
 
+# ---------------- 代理切换清单（回写自反爬决策数据快照，GET 须在 /{entry_id} 之前） ----------------
+
+
+@router.get("/switch-list", response_model=PageResult[dict])
+def list_switch_list() -> PageResult[dict]:
+    """代理池业务面查看代理切换清单，每条都可追溯到来源快照与策略版本。"""
+    items = service.list_switches()
+    return PageResult(items=items, total=len(items), page=1, size=len(items) or 1)
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条代理节点明细；不存在时给出可读的错误说明。"""
@@ -90,3 +111,16 @@ def run_action(entry_id: int, payload: ActionPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
+
+
+# ---------------- 代理切换清单写入 ----------------
+
+
+@router.post("/switch-list", response_model=ActionResult)
+def create_switch(payload: SwitchPayload) -> ActionResult:
+    """读取决策快照生成切换清单；版本不一致或快照重复提交时由代理池拒收。"""
+    switch, message = service.build_switch_from_snapshot(
+        payload.snapshot_id, proxy_node_id=payload.proxy_node_id)
+    if switch is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=switch)

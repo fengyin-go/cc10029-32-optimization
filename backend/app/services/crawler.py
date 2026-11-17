@@ -1,9 +1,10 @@
-"""爬虫引擎 时间线服务：生成作业时间序列和示例数据。"""
+"""爬虫引擎 时间线服务：生成作业时间序列、示例数据与采集入口统一决策。"""
 from __future__ import annotations
 
 from datetime import date, timedelta
 from typing import Any
 
+from app.services.antiblock import ENTRY_CRAWLER, AntiblockService
 from app.store import store
 
 MODULE = "crawler"
@@ -11,6 +12,9 @@ REQUIRED_FIELDS = ["任务编号", "任务名称", "关联站点"]
 STATUS_ORDER = ["草稿", "待校验", "已启用", "已停用"]
 ACTION_RULES = {"提交校验": "待校验", "启用配置": "已启用", "停用配置": "已停用"}
 NEGATIVE_ACTIONS = ["停用配置"]
+
+# 采集入口复用反爬对抗的统一决策写法，不再自行维护一份命中判断
+antiblock_service = AntiblockService()
 
 
 class CrawlerService:
@@ -58,3 +62,20 @@ class CrawlerService:
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
         return entry, f"爬虫任务已{action}"
+
+    def collect_decide(
+        self,
+        metrics: dict[str, Any],
+        *,
+        version: str | None = None,
+        prefer: str = "latest",
+        request_batch: str | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
+        """采集入口的反爬判断：委托反爬对抗统一决策，返回绑定版本的决策快照。"""
+        return antiblock_service.decide(
+            metrics,
+            source=ENTRY_CRAWLER,
+            version=version,
+            prefer=prefer,
+            request_batch=request_batch,
+        )
